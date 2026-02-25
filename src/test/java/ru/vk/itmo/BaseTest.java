@@ -42,6 +42,11 @@ public class BaseTest {
         assertSame(iterator, Arrays.asList(expected));
     }
 
+    public void assertNull(Entry<String> entry) {
+        checkInterrupted();
+        Assertions.assertNull(entry);
+    }
+
     public void assertSame(Iterator<? extends Entry<String>> iterator, List<? extends Entry<?>> expected) {
         int index = 0;
         for (Entry<?> entry : expected) {
