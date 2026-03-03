@@ -17,6 +17,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
@@ -38,13 +40,17 @@ public class BaseTest {
         Assertions.assertEquals(expected, entry);
     }
 
+    public void assertNull(Entry<String> entry) {
+        checkInterrupted();
+        Assertions.assertNull(entry);
+    }
+
     public void assertSame(Iterator<? extends Entry<String>> iterator, Entry<?>... expected) {
         assertSame(iterator, Arrays.asList(expected));
     }
 
-    public void assertNull(Entry<String> entry) {
-        checkInterrupted();
-        Assertions.assertNull(entry);
+    public void assertSame(Iterator<? extends Entry<String>> iterator, int... expected) {
+        assertSame(iterator, IntStream.of(expected).mapToObj(this::entryAt).collect(Collectors.toList()));
     }
 
     public void assertSame(Iterator<? extends Entry<String>> iterator, List<? extends Entry<?>> expected) {
