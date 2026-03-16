@@ -1,18 +1,35 @@
 package ru.vk.itmo.solution;
 
-import java.lang.foreign.MemorySegment;
-import java.util.Iterator;
-
 import ru.vk.itmo.Config;
 import ru.vk.itmo.Dao;
 import ru.vk.itmo.Entry;
 
+import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
+import java.util.Iterator;
+import java.util.concurrent.ConcurrentNavigableMap;
+import java.util.concurrent.ConcurrentSkipListMap;
+
 public class MemorySegmentDao implements Dao<MemorySegment, Entry<MemorySegment>> {
+
+    private final ConcurrentNavigableMap<MemorySegment, Entry<MemorySegment>> storage =
+            new ConcurrentSkipListMap<>(this::compare);
 
     @Override
     public Iterator<Entry<MemorySegment>> get(MemorySegment from, MemorySegment to) {
-        // TODO implement
-        return null;
+        ConcurrentNavigableMap<MemorySegment, Entry<MemorySegment>> subMap;
+
+        if (from == null && to == null) {
+            subMap = storage;
+        } else if (from == null) {
+            subMap = storage.headMap(to, false);
+        } else if (to == null) {
+            subMap = storage.tailMap(from, true);
+        } else {
+            subMap = storage.subMap(from, true, to, false);
+        }
+
+        return subMap.values().iterator();
     }
 
     public MemorySegmentDao(Config config) {
@@ -20,13 +37,18 @@ public class MemorySegmentDao implements Dao<MemorySegment, Entry<MemorySegment>
 
     @Override
     public Entry<MemorySegment> get(MemorySegment key) {
-        // TODO implement
-        return null;
+        if (key == null) return null;
+        return storage.get(key);
     }
 
     @Override
     public void upsert(Entry<MemorySegment> entry) {
-        // TODO implement
+        if (entry == null) return;
+        if (entry.value() == null) {
+            storage.remove(entry.key());
+        } else {
+            storage.put(entry.key(), entry);
+        }
     }
 
     @Override
@@ -36,5 +58,17 @@ public class MemorySegmentDao implements Dao<MemorySegment, Entry<MemorySegment>
 
     @Override
     public void close() {
+    }
+
+    private int compare(MemorySegment segment1, MemorySegment segment2) {
+        long offset = segment1.mismatch(segment2);
+        if (offset == -1) return 0;
+        if (offset == segment1.byteSize()) return -1;
+        if (offset == segment2.byteSize()) return 1;
+
+        return Byte.compareUnsigned(
+                segment1.get(ValueLayout.JAVA_BYTE, offset),
+                segment2.get(ValueLayout.JAVA_BYTE, offset)
+        );
     }
 }
