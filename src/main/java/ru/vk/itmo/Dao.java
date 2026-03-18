@@ -71,6 +71,13 @@ public interface Dao<D, E extends Entry<D>> extends Closeable {
         //by default do nothing
     }
 
+    /**
+     * Compacts data (no-op by default).
+     */
+    default void compact() throws IOException {
+        // Do nothing
+    }
+
     /*
      * Releases ru.vk.itmo.Dao (calls flush by default).
      */
