@@ -15,6 +15,11 @@ import ru.vk.itmo.test.DaoFactory;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+/**
+ * Compaction tests for {@link Dao} implementations.
+ *
+ * @author Vadim Tsesko
+ */
 class CompactionTest extends BaseTest {
     @DaoTest(stage = 4)
     void empty(Dao<String, Entry<String>> dao) throws IOException {
@@ -126,7 +131,6 @@ class CompactionTest extends BaseTest {
         // Heuristic
         assertTrue(stats.getMax() - stats.getMin() < 1024);
     }
-
 
     @DaoTest(stage = 4)
     void compactAndAdd(Dao<String, Entry<String>> dao) throws IOException {

@@ -57,7 +57,6 @@ public @interface DaoTest {
                 CodeSource codeSource = DaoFactory.class.getProtectionDomain().getCodeSource();
                 Path path = Path.of(codeSource.getLocation().toURI());
                 try (Stream<Path> walk = Files.walk(path)) {
-                    @SuppressWarnings("SimplifyStreamApiCallChains")
                     List<Class<?>> factories = walk
                             .filter(p -> p.getFileName().toString().endsWith(".class"))
                             .map(p -> getDaoClass(path, p))
@@ -142,9 +141,10 @@ public @interface DaoTest {
 
         private Dao<String, Entry<String>> createDao(ExtensionContext context, Class<?> clazz) throws IOException, InstantiationException, IllegalAccessException, InvocationTargetException, NoSuchMethodException {
             Path tmp = Files.createTempDirectory("dao");
+            long flushThreshold = 1 << 20; // 1 MB
 
             DaoFactory.Factory<?, ?> f = (DaoFactory.Factory<?, ?>) clazz.getDeclaredConstructor().newInstance();
-            Dao<String, Entry<String>> dao = f.createStringDao(new Config(tmp));
+            Dao<String, Entry<String>> dao = f.createStringDao(new Config(tmp, flushThreshold));
 
             ExtensionContext.Store.CloseableResource res = () -> {
                 dao.close();
@@ -165,6 +165,7 @@ public @interface DaoTest {
                     }
                 });
             };
+
             context.getStore(NAMESPACE).put(String.valueOf(ID.incrementAndGet()), res);
 
             return dao;

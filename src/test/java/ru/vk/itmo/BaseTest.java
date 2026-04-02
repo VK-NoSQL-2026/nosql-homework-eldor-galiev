@@ -1,6 +1,7 @@
 package ru.vk.itmo;
 
 import java.io.IOException;
+import java.nio.channels.IllegalBlockingModeException;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -85,7 +86,7 @@ public class BaseTest {
         assertSame(dao.get(keyAt(index)), entryAt(index));
     }
 
-    public void sleep(int millis) {
+    public static void sleep(final int millis) {
         try {
             Thread.sleep(millis);
         } catch (InterruptedException e) {
@@ -159,6 +160,16 @@ public class BaseTest {
         return runInParallel(tasksCount, tasksCount, runnable);
     }
 
+    public AutoCloseable runInParallel(int threadCount, int tasksCount, ParallelTask runnable, Runnable longTask) {
+        ExecutorService service = Executors.newSingleThreadExecutor();
+        executors.add(service);
+        Future<?> submit = service.submit(longTask);
+        return () -> {
+            runInParallel(threadCount, tasksCount, runnable).close();
+            submit.get();
+        };
+    }
+
     public AutoCloseable runInParallel(int threadCount, int tasksCount, ParallelTask runnable) {
         ExecutorService service = Executors.newFixedThreadPool(threadCount);
         executors.add(service);
@@ -186,6 +197,10 @@ public class BaseTest {
 
     public interface ParallelTask {
         void run(int taskIndex) throws Exception;
+    }
+
+    public interface ErrorableTask<E extends Exception> {
+        void run() throws E;
     }
 
     public void checkInterrupted() {
@@ -242,4 +257,35 @@ public class BaseTest {
         return result[0];
     }
 
+    public static void retry(
+            final long timeoutNanos,
+            final Runnable runnable) {
+        long elapsedNanos;
+        while (true) {
+            try {
+                long start = System.nanoTime();
+                runnable.run();
+                elapsedNanos = System.nanoTime() - start;
+                break;
+            } catch (Exception e) {
+                sleep(100);
+            }
+        }
+
+        // Check timeout
+        if (elapsedNanos > timeoutNanos) {
+            throw new IllegalBlockingModeException();
+        }
+    }
+
+    public static void retry(Runnable runnable) {
+        while (true) {
+            try {
+                runnable.run();
+                break;
+            } catch (Exception e) {
+                sleep(100);
+            }
+        }
+    }
 }
