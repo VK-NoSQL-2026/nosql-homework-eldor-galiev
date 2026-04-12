@@ -105,7 +105,7 @@ public class ReferenceDao implements Dao<MemorySegment, Entry<MemorySegment>> {
         arena.close();
 
         if (!storage.isEmpty()) {
-            DiskStorage.save(path, storage.values());
+            DiskStorage.saveNextSSTable(path, storage.values());
         }
     }
 }
