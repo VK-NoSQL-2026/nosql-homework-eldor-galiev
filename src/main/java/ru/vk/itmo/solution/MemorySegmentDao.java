@@ -29,18 +29,18 @@ public class MemorySegmentDao implements Dao<MemorySegment, Entry<MemorySegment>
     private final ConcurrentSkipListMap<MemorySegment, Entry<MemorySegment>> memStorage;
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final AtomicInteger nextFileId;
-    private Arena arena;
+    private final Arena arena;
 
     public MemorySegmentDao(Config config) {
         this.baseDir = config.basePath();
         this.memStorage = new ConcurrentSkipListMap<>(COMPARATOR);
         this.fileStorages = new CopyOnWriteArrayList<>();
+        this.arena = Arena.ofShared();
 
         try {
             if (!Files.exists(baseDir)) {
                 Files.createDirectories(baseDir);
                 this.nextFileId = new AtomicInteger(0);
-                this.arena = Arena.ofShared();
                 return;
             }
 
@@ -65,7 +65,6 @@ public class MemorySegmentDao implements Dao<MemorySegment, Entry<MemorySegment>
                 return Integer.compare(idB, idA);
             });
 
-            this.arena = Arena.ofShared();
             for (Path p : existingFiles) {
                 fileStorages.add(new FileStorage(p, arena));
             }
@@ -136,6 +135,44 @@ public class MemorySegmentDao implements Dao<MemorySegment, Entry<MemorySegment>
     }
 
     @Override
+    public void compact() {
+        if (closed.get()) {
+            throw new IllegalStateException("DAO is closed");
+        }
+
+        try {
+            List<Iterator<Entry<MemorySegment>>> iterators = new ArrayList<>();
+            iterators.add(memStorage.values().iterator());
+            for (FileStorage fs : fileStorages) {
+                iterators.add(fs.rangeIterator(null, null));
+            }
+            MergingIterator mergingIterator = new MergingIterator(iterators);
+
+            List<Entry<MemorySegment>> aliveEntries = new ArrayList<>();
+            while (mergingIterator.hasNext()) {
+                aliveEntries.add(mergingIterator.next());
+            }
+
+            for (FileStorage fs : fileStorages) {
+                Files.deleteIfExists(fs.getPath());
+            }
+            fileStorages.clear();
+            memStorage.clear();
+
+            if (!aliveEntries.isEmpty()) {
+                int newFileId = nextFileId.incrementAndGet();
+                Path newFile = baseDir.resolve(String.format(FILE_PREFIX + "%05d", newFileId));
+                FileStorage newStorage = new FileStorage(newFile, aliveEntries, arena);
+                fileStorages.add(newStorage);
+            } else {
+                nextFileId.set(0);
+            }
+        } catch (IOException e) {
+            throw new RuntimeException("Compact failed", e);
+        }
+    }
+
+    @Override
     public void close() {
         if (!closed.compareAndSet(false, true)) {
             return;
@@ -146,16 +183,7 @@ public class MemorySegmentDao implements Dao<MemorySegment, Entry<MemorySegment>
                 saveMemTableToDisk();
             }
             memStorage.clear();
-
-            for (FileStorage fs : fileStorages) {
-                fs.close();
-            }
             fileStorages.clear();
-
-            if (arena != null) {
-                arena.close();
-                arena = null;
-            }
         } catch (IOException e) {
             throw new RuntimeException("Failed to close DAO", e);
         }

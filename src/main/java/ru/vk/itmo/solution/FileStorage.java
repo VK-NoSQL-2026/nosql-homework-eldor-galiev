@@ -7,7 +7,6 @@ import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
-import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -17,6 +16,7 @@ import java.util.*;
 import static ru.vk.itmo.solution.MemorySegmentDao.COMPARATOR;
 
 public class FileStorage {
+    private final Path path;
     private final MemorySegment mappedSegment;
     private final int entryCount;
     private final long[] keyOffsets;
@@ -24,9 +24,22 @@ public class FileStorage {
     private final long[] valueOffsets;
     private final int[] valueLengths;
 
-    FileStorage(Path path, Arena arena) throws IOException {
+
+    public FileStorage(Path path, Arena arena) throws IOException {
+        this.path = path;
         try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ)) {
             long fileSize = Files.size(path);
+
+            if (fileSize == 0) {
+                this.mappedSegment = null;
+                this.entryCount = 0;
+                this.keyOffsets = new long[0];
+                this.keyLengths = new int[0];
+                this.valueOffsets = new long[0];
+                this.valueLengths = new int[0];
+                return;
+            }
+
             this.mappedSegment = channel.map(
                     FileChannel.MapMode.READ_ONLY,
                     0,
@@ -82,32 +95,45 @@ public class FileStorage {
         }
     }
 
-    FileStorage(Path path, Collection<Entry<MemorySegment>> entries, Arena arena) throws IOException {
-        this.entryCount = entries.size();
+    public FileStorage(Path path, Collection<Entry<MemorySegment>> entries, Arena arena) throws IOException {
+        this.path = path;
+
+        if (entries.isEmpty()) {
+            Files.createFile(path);
+            this.mappedSegment = null;
+            this.entryCount = 0;
+            this.keyOffsets = new long[0];
+            this.keyLengths = new int[0];
+            this.valueOffsets = new long[0];
+            this.valueLengths = new int[0];
+            return;
+        }
+
+        List<Entry<MemorySegment>> sorted = new ArrayList<>(entries);
+        sorted.sort(Comparator.comparing(Entry::key, COMPARATOR));
+
+        this.entryCount = sorted.size();
         this.keyOffsets = new long[entryCount];
         this.keyLengths = new int[entryCount];
         this.valueOffsets = new long[entryCount];
         this.valueLengths = new int[entryCount];
 
-        List<Entry<MemorySegment>> sorted = new ArrayList<>(entries);
-        sorted.sort(Comparator.comparing(Entry::key, COMPARATOR));
+        long dataSize = 0;
+        for (Entry<MemorySegment> entry : sorted) {
+            dataSize += 4 + entry.key().byteSize();
+            MemorySegment value = entry.value();
+            if (value == null) {
+                dataSize += 4;
+            } else {
+                dataSize += 4 + value.byteSize();
+            }
+        }
 
         try (FileChannel channel = FileChannel.open(
                 path,
                 StandardOpenOption.CREATE_NEW,
                 StandardOpenOption.WRITE,
                 StandardOpenOption.READ)) {
-
-            long dataSize = 0;
-            for (Entry<MemorySegment> entry : sorted) {
-                dataSize += 4 + entry.key().byteSize();
-                MemorySegment value = entry.value();
-                if (value == null) {
-                    dataSize += 4;
-                } else {
-                    dataSize += 4 + value.byteSize();
-                }
-            }
 
             MemorySegment fileSegment = channel.map(
                     FileChannel.MapMode.READ_WRITE,
@@ -151,22 +177,33 @@ public class FileStorage {
 
         try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ)) {
             long fileSize = Files.size(path);
-            this.mappedSegment = channel.map(
-                    FileChannel.MapMode.READ_ONLY,
-                    0,
-                    fileSize,
-                    arena
-            );
+            if (fileSize > 0) {
+                this.mappedSegment = channel.map(
+                        FileChannel.MapMode.READ_ONLY,
+                        0,
+                        fileSize,
+                        arena
+                );
+            } else {
+                this.mappedSegment = null;
+            }
         }
     }
 
-    Entry<MemorySegment> get(MemorySegment key) {
+    public Path getPath() {
+        return path;
+    }
+
+    public Entry<MemorySegment> get(MemorySegment key) {
+        if (entryCount == 0) {
+            return null;
+        }
         int idx = binarySearch(key);
         if (idx < 0) return null;
         return readEntryAtIndex(idx);
     }
 
-    Iterator<Entry<MemorySegment>> rangeIterator(MemorySegment from, MemorySegment to) {
+    public Iterator<Entry<MemorySegment>> rangeIterator(MemorySegment from, MemorySegment to) {
         if (entryCount == 0) {
             return Collections.emptyIterator();
         }
@@ -215,10 +252,6 @@ public class FileStorage {
         return new BaseEntry<>(key, value);
     }
 
-    void close() {
-    }
-
-
     private final class FileRangeIterator implements Iterator<Entry<MemorySegment>> {
         private int currentIdx;
         private final int endIdx;
@@ -240,7 +273,6 @@ public class FileStorage {
                 currentIdx++;
                 nextEntry = entry;
                 return true;
-
             }
             return false;
         }

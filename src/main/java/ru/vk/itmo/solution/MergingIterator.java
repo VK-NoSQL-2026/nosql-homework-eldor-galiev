@@ -14,19 +14,29 @@ public class MergingIterator implements Iterator<Entry<MemorySegment>> {
     private final PriorityQueue<SourceEntry> heap;
     private Entry<MemorySegment> nextEntry;
 
-    MergingIterator(Iterator<Entry<MemorySegment>> memIter,
+    public MergingIterator(Iterator<Entry<MemorySegment>> memIter,
                     List<Iterator<Entry<MemorySegment>>> fileIters) {
         this.heap = new PriorityQueue<>((a, b) -> {
             int cmp = COMPARATOR.compare(a.entry.key(), b.entry.key());
-            if (cmp != 0) {
-                return cmp;
-            }
+            if (cmp != 0) return cmp;
             return Integer.compare(a.sourceId, b.sourceId);
         });
 
         addIfHasNext(memIter, 0);
         for (int i = 0; i < fileIters.size(); i++) {
             addIfHasNext(fileIters.get(i), i + 1);
+        }
+    }
+
+    public MergingIterator(List<Iterator<Entry<MemorySegment>>> iterators) {
+        this.heap = new PriorityQueue<>((a, b) -> {
+            int cmp = COMPARATOR.compare(a.entry.key(), b.entry.key());
+            if (cmp != 0) return cmp;
+            return Integer.compare(a.sourceId, b.sourceId);
+        });
+
+        for (int i = 0; i < iterators.size(); i++) {
+            addIfHasNext(iterators.get(i), i);
         }
     }
 
@@ -80,7 +90,7 @@ public class MergingIterator implements Iterator<Entry<MemorySegment>> {
         final Iterator<Entry<MemorySegment>> iterator;
         final int sourceId;
 
-        SourceEntry(Entry<MemorySegment> entry, Iterator<Entry<MemorySegment>> iterator, int sourceId) {
+        private SourceEntry(Entry<MemorySegment> entry, Iterator<Entry<MemorySegment>> iterator, int sourceId) {
             this.entry = entry;
             this.iterator = iterator;
             this.sourceId = sourceId;
