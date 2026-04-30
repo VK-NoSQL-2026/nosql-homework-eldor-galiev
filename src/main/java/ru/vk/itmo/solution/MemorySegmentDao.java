@@ -14,10 +14,10 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
-import java.util.concurrent.ConcurrentSkipListMap;
-import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class MemorySegmentDao implements Dao<MemorySegment, Entry<MemorySegment>> {
 
@@ -25,15 +25,26 @@ public class MemorySegmentDao implements Dao<MemorySegment, Entry<MemorySegment>
     static final Comparator<MemorySegment> COMPARATOR = MemorySegmentDao::compare;
 
     private final Path baseDir;
-    private final List<FileStorage> fileStorages;
-    private final ConcurrentSkipListMap<MemorySegment, Entry<MemorySegment>> memStorage;
+    private final CopyOnWriteArrayList<FileStorage> fileStorages;
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final AtomicInteger nextFileId;
     private final Arena arena;
+    private final long flushThresholdBytes;
+
+    private volatile ConcurrentSkipListMap<MemorySegment, Entry<MemorySegment>> activeMemTable;
+    private volatile ConcurrentSkipListMap<MemorySegment, Entry<MemorySegment>> flushingMemTable;
+    private final AtomicLong memTableSize = new AtomicLong(0);
+    private final ExecutorService backgroundExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "dao-background");
+        t.setDaemon(true);
+        return t;
+    });
 
     public MemorySegmentDao(Config config) {
         this.baseDir = config.basePath();
-        this.memStorage = new ConcurrentSkipListMap<>(COMPARATOR);
+        this.flushThresholdBytes = config.flushThresholdBytes();
+        this.activeMemTable = new ConcurrentSkipListMap<>(COMPARATOR);
+        this.flushingMemTable = null;
         this.fileStorages = new CopyOnWriteArrayList<>();
         this.arena = Arena.ofShared();
 
@@ -79,14 +90,20 @@ public class MemorySegmentDao implements Dao<MemorySegment, Entry<MemorySegment>
             throw new IllegalStateException("DAO is closed");
         }
 
-        Iterator<Entry<MemorySegment>> memIter = subMapIterator(memStorage, from, to);
+        List<Iterator<Entry<MemorySegment>>> iterators = new ArrayList<>();
 
-        List<Iterator<Entry<MemorySegment>>> fileIters = new ArrayList<>(fileStorages.size());
-        for (FileStorage fs : fileStorages) {
-            fileIters.add(fs.rangeIterator(from, to));
+        iterators.add(subMapIterator(activeMemTable, from, to));
+
+        ConcurrentSkipListMap<MemorySegment, Entry<MemorySegment>> flushing = this.flushingMemTable;
+        if (flushing != null) {
+            iterators.add(subMapIterator(flushing, from, to));
         }
 
-        return new MergingIterator(memIter, fileIters);
+        for (FileStorage fs : fileStorages) {
+            iterators.add(fs.rangeIterator(from, to));
+        }
+
+        return new MergingIterator(iterators);
     }
 
     @Override
@@ -95,13 +112,21 @@ public class MemorySegmentDao implements Dao<MemorySegment, Entry<MemorySegment>
             return null;
         }
 
-        Entry<MemorySegment> memEntry = memStorage.get(key);
-        if (memEntry != null) {
-            return memEntry.value() == null ? null : memEntry;
+        Entry<MemorySegment> entry = activeMemTable.get(key);
+        if (entry != null) {
+            return entry.value() == null ? null : entry;
+        }
+
+        ConcurrentSkipListMap<MemorySegment, Entry<MemorySegment>> flushing = this.flushingMemTable;
+        if (flushing != null) {
+            entry = flushing.get(key);
+            if (entry != null) {
+                return entry.value() == null ? null : entry;
+            }
         }
 
         for (FileStorage fs : fileStorages) {
-            Entry<MemorySegment> entry = fs.get(key);
+            entry = fs.get(key);
             if (entry != null) {
                 return entry.value() == null ? null : entry;
             }
@@ -115,7 +140,35 @@ public class MemorySegmentDao implements Dao<MemorySegment, Entry<MemorySegment>
         if (entry == null || closed.get()) {
             return;
         }
-        memStorage.put(entry.key(), entry);
+
+        long entrySize = entry.key().byteSize();
+        if (entry.value() != null) {
+            entrySize += entry.value().byteSize();
+        }
+
+        long finalEntrySize = entrySize;
+        activeMemTable.compute(entry.key(), (k, old) -> {
+            long oldSize = 0;
+            if (old != null) {
+                oldSize = old.key().byteSize();
+                if (old.value() != null) {
+                    oldSize += old.value().byteSize();
+                }
+            }
+            memTableSize.addAndGet(finalEntrySize - oldSize);
+            return entry;
+        });
+
+        if (flushThresholdBytes > 0 && memTableSize.get() >= flushThresholdBytes) {
+            triggerAutoFlush();
+        }
+    }
+
+    private synchronized void triggerAutoFlush() {
+        if (flushingMemTable != null) {
+            throw new IllegalStateException("Flush already in progress, write throttling is required");
+        }
+        scheduleFlushInternal();
     }
 
     @Override
@@ -123,14 +176,39 @@ public class MemorySegmentDao implements Dao<MemorySegment, Entry<MemorySegment>
         if (closed.get()) {
             return;
         }
-        if (memStorage.isEmpty()) {
-            return;
+        synchronized (this) {
+            if (flushingMemTable != null) {
+                return;
+            }
+            if (activeMemTable.isEmpty()) {
+                return;
+            }
+            scheduleFlushInternal();
         }
+    }
 
+    private void scheduleFlushInternal() {
+        flushingMemTable = activeMemTable;
+        activeMemTable = new ConcurrentSkipListMap<>(COMPARATOR);
+        memTableSize.set(0);
+
+        ConcurrentSkipListMap<MemorySegment, Entry<MemorySegment>> tableToFlush = flushingMemTable;
+        backgroundExecutor.execute(() -> flushMemTableSync(tableToFlush));
+    }
+
+    private void flushMemTableSync(ConcurrentSkipListMap<MemorySegment, Entry<MemorySegment>> table) {
         try {
-            saveMemTableToDisk();
+            if (table.isEmpty()) {
+                return;
+            }
+            int fileId = nextFileId.incrementAndGet();
+            Path newFile = baseDir.resolve(String.format(FILE_PREFIX + "%05d", fileId));
+            FileStorage newStorage = new FileStorage(newFile, table.values(), arena);
+            fileStorages.add(0, newStorage);
         } catch (IOException e) {
-            throw new RuntimeException("Failed to flush", e);
+            throw new RuntimeException("Flush failed", e);
+        } finally {
+            flushingMemTable = null;
         }
     }
 
@@ -139,37 +217,39 @@ public class MemorySegmentDao implements Dao<MemorySegment, Entry<MemorySegment>
         if (closed.get()) {
             throw new IllegalStateException("DAO is closed");
         }
+        backgroundExecutor.execute(() -> {
+            try {
+                List<FileStorage> currentFiles = new ArrayList<>(fileStorages);
+                if (currentFiles.isEmpty()) {
+                    return;
+                }
 
-        try {
-            List<Iterator<Entry<MemorySegment>>> iterators = new ArrayList<>();
-            iterators.add(memStorage.values().iterator());
-            for (FileStorage fs : fileStorages) {
-                iterators.add(fs.rangeIterator(null, null));
-            }
-            MergingIterator mergingIterator = new MergingIterator(iterators);
+                List<Iterator<Entry<MemorySegment>>> iterators = new ArrayList<>();
+                for (FileStorage fs : currentFiles) {
+                    iterators.add(fs.rangeIterator(null, null));
+                }
 
-            List<Entry<MemorySegment>> aliveEntries = new ArrayList<>();
-            while (mergingIterator.hasNext()) {
-                aliveEntries.add(mergingIterator.next());
-            }
+                MergingIterator mergingIterator = new MergingIterator(iterators);
+                List<Entry<MemorySegment>> aliveEntries = new ArrayList<>();
+                while (mergingIterator.hasNext()) {
+                    aliveEntries.add(mergingIterator.next());
+                }
 
-            for (FileStorage fs : fileStorages) {
-                Files.deleteIfExists(fs.getPath());
-            }
-            fileStorages.clear();
-            memStorage.clear();
+                if (!aliveEntries.isEmpty()) {
+                    int newFileId = nextFileId.incrementAndGet();
+                    Path newFile = baseDir.resolve(String.format(FILE_PREFIX + "%05d", newFileId));
+                    FileStorage newStorage = new FileStorage(newFile, aliveEntries, arena);
+                    fileStorages.add(0, newStorage);
+                }
 
-            if (!aliveEntries.isEmpty()) {
-                int newFileId = nextFileId.incrementAndGet();
-                Path newFile = baseDir.resolve(String.format(FILE_PREFIX + "%05d", newFileId));
-                FileStorage newStorage = new FileStorage(newFile, aliveEntries, arena);
-                fileStorages.add(newStorage);
-            } else {
-                nextFileId.set(0);
+                for (FileStorage fs : currentFiles) {
+                    Files.deleteIfExists(fs.getPath());
+                }
+                fileStorages.removeAll(currentFiles);
+            } catch (IOException e) {
+                throw new RuntimeException("Compact failed", e);
             }
-        } catch (IOException e) {
-            throw new RuntimeException("Compact failed", e);
-        }
+        });
     }
 
     @Override
@@ -178,25 +258,30 @@ public class MemorySegmentDao implements Dao<MemorySegment, Entry<MemorySegment>
             return;
         }
 
+        backgroundExecutor.shutdown();
         try {
-            if (!memStorage.isEmpty()) {
-                saveMemTableToDisk();
+            while (!backgroundExecutor.awaitTermination(1, TimeUnit.SECONDS)) {
             }
-            memStorage.clear();
-            fileStorages.clear();
-        } catch (IOException e) {
-            throw new RuntimeException("Failed to close DAO", e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
-    }
 
-    private void saveMemTableToDisk() throws IOException {
-        int fileId = nextFileId.incrementAndGet();
-        Path newFile = baseDir.resolve(String.format(FILE_PREFIX + "%05d", fileId));
+        try {
+            if (!activeMemTable.isEmpty()) {
+                int fileId = nextFileId.incrementAndGet();
+                Path newFile = baseDir.resolve(String.format(FILE_PREFIX + "%05d", fileId));
+                FileStorage newStorage = new FileStorage(newFile, activeMemTable.values(), arena);
+                fileStorages.add(0, newStorage);
+                activeMemTable.clear();
+            }
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to finalize DAO state", e);
+        }
 
-        FileStorage newStorage = new FileStorage(newFile, memStorage.values(), arena);
-        fileStorages.addFirst(newStorage);
-
-        memStorage.clear();
+        arena.close();
+        fileStorages.clear();
+        activeMemTable = null;
+        flushingMemTable = null;
     }
 
     private static Iterator<Entry<MemorySegment>> subMapIterator(

@@ -14,20 +14,6 @@ public class MergingIterator implements Iterator<Entry<MemorySegment>> {
     private final PriorityQueue<SourceEntry> heap;
     private Entry<MemorySegment> nextEntry;
 
-    public MergingIterator(Iterator<Entry<MemorySegment>> memIter,
-                    List<Iterator<Entry<MemorySegment>>> fileIters) {
-        this.heap = new PriorityQueue<>((a, b) -> {
-            int cmp = COMPARATOR.compare(a.entry.key(), b.entry.key());
-            if (cmp != 0) return cmp;
-            return Integer.compare(a.sourceId, b.sourceId);
-        });
-
-        addIfHasNext(memIter, 0);
-        for (int i = 0; i < fileIters.size(); i++) {
-            addIfHasNext(fileIters.get(i), i + 1);
-        }
-    }
-
     public MergingIterator(List<Iterator<Entry<MemorySegment>>> iterators) {
         this.heap = new PriorityQueue<>((a, b) -> {
             int cmp = COMPARATOR.compare(a.entry.key(), b.entry.key());
