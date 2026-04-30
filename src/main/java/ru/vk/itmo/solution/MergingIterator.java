@@ -3,10 +3,7 @@ package ru.vk.itmo.solution;
 import ru.vk.itmo.Entry;
 
 import java.lang.foreign.MemorySegment;
-import java.util.Iterator;
-import java.util.List;
-import java.util.NoSuchElementException;
-import java.util.PriorityQueue;
+import java.util.*;
 
 import static ru.vk.itmo.solution.MemorySegmentDao.COMPARATOR;
 
@@ -14,13 +11,28 @@ public class MergingIterator implements Iterator<Entry<MemorySegment>> {
     private final PriorityQueue<SourceEntry> heap;
     private Entry<MemorySegment> nextEntry;
 
-    public MergingIterator(List<Iterator<Entry<MemorySegment>>> iterators) {
-        this.heap = new PriorityQueue<>((a, b) -> {
+    private static Comparator<SourceEntry> ascendingComparator() {
+        return (a, b) -> {
             int cmp = COMPARATOR.compare(a.entry.key(), b.entry.key());
             if (cmp != 0) return cmp;
             return Integer.compare(a.sourceId, b.sourceId);
-        });
+        };
+    }
 
+    private static Comparator<SourceEntry> descendingComparator() {
+        return (a, b) -> {
+            int cmp = COMPARATOR.compare(b.entry.key(), a.entry.key());
+            if (cmp != 0) return cmp;
+            return Integer.compare(a.sourceId, b.sourceId);
+        };
+    }
+
+    public MergingIterator(List<Iterator<Entry<MemorySegment>>> iterators) {
+        this(iterators, false);
+    }
+
+    public MergingIterator(List<Iterator<Entry<MemorySegment>>> iterators, boolean reverse) {
+        this.heap = new PriorityQueue<>(reverse ? descendingComparator() : ascendingComparator());
         for (int i = 0; i < iterators.size(); i++) {
             addIfHasNext(iterators.get(i), i);
         }

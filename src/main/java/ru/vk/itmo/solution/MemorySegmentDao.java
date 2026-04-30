@@ -107,6 +107,28 @@ public class MemorySegmentDao implements Dao<MemorySegment, Entry<MemorySegment>
     }
 
     @Override
+    public Iterator<Entry<MemorySegment>> descendingGet(MemorySegment from, MemorySegment to) {
+        if (closed.get()) {
+            throw new IllegalStateException("DAO is closed");
+        }
+
+        List<Iterator<Entry<MemorySegment>>> iterators = new ArrayList<>();
+
+        iterators.add(descendingSubMapIterator(activeMemTable, from, to));
+
+        ConcurrentSkipListMap<MemorySegment, Entry<MemorySegment>> flushing = this.flushingMemTable;
+        if (flushing != null) {
+            iterators.add(descendingSubMapIterator(flushing, from, to));
+        }
+
+        for (FileStorage fs : fileStorages) {
+            iterators.add(fs.descendingRangeIterator(from, to));
+        }
+
+        return new MergingIterator(iterators, true);
+    }
+
+    @Override
     public Entry<MemorySegment> get(MemorySegment key) {
         if (key == null || closed.get()) {
             return null;
@@ -296,6 +318,21 @@ public class MemorySegmentDao implements Dao<MemorySegment, Entry<MemorySegment>
             return map.tailMap(from, true).values().iterator();
         } else {
             return map.subMap(from, true, to, false).values().iterator();
+        }
+    }
+
+    private static Iterator<Entry<MemorySegment>> descendingSubMapIterator(
+            ConcurrentSkipListMap<MemorySegment, Entry<MemorySegment>> map,
+            MemorySegment from,
+            MemorySegment to) {
+        if (from == null && to == null) {
+            return map.descendingMap().values().iterator();
+        } else if (from == null) {
+            return map.headMap(to, false).descendingMap().values().iterator();
+        } else if (to == null) {
+            return map.tailMap(from, true).descendingMap().values().iterator();
+        } else {
+            return map.subMap(from, true, to, false).descendingMap().values().iterator();
         }
     }
 

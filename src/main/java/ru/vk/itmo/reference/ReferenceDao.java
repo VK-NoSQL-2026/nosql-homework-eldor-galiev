@@ -97,6 +97,11 @@ public class ReferenceDao implements Dao<MemorySegment, Entry<MemorySegment>> {
     }
 
     @Override
+    public Iterator<Entry<MemorySegment>> descendingGet(MemorySegment b, MemorySegment o) {
+        return null;
+    }
+
+    @Override
     public void close() throws IOException {
         if (!arena.scope().isAlive()) {
             return;

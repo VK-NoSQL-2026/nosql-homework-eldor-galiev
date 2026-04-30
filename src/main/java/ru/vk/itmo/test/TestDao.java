@@ -1,12 +1,12 @@
 package ru.vk.itmo.test;
 
-import java.io.IOException;
-import java.util.Iterator;
-
 import ru.vk.itmo.BaseEntry;
 import ru.vk.itmo.Config;
 import ru.vk.itmo.Dao;
 import ru.vk.itmo.Entry;
+
+import java.io.IOException;
+import java.util.Iterator;
 
 class TestDao<Data, E extends Entry<Data>> implements Dao<String, Entry<String>> {
 
@@ -47,6 +47,28 @@ class TestDao<Data, E extends Entry<Data>> implements Dao<String, Entry<String>>
     @Override
     public Iterator<Entry<String>> get(String from, String to) {
         Iterator<E> iterator = delegate.get(
+                factory.fromString(from),
+                factory.fromString(to)
+        );
+        return new Iterator<>() {
+            @Override
+            public boolean hasNext() {
+                return iterator.hasNext();
+            }
+
+            @Override
+            public Entry<String> next() {
+                E next = iterator.next();
+                String key = factory.toString(next.key());
+                String value = factory.toString(next.value());
+                return new BaseEntry<>(key, value);
+            }
+        };
+    }
+
+    @Override
+    public Iterator<Entry<String>> descendingGet(String from, String to) {
+        Iterator<E> iterator = delegate.descendingGet(
                 factory.fromString(from),
                 factory.fromString(to)
         );

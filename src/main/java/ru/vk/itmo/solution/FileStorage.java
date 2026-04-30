@@ -218,7 +218,25 @@ public class FileStorage {
             int idx = binarySearch(to);
             endIdx = (idx >= 0) ? idx : -idx - 1;
         }
-        return new FileRangeIterator(startIdx, endIdx);
+        return new FileRangeIterator(startIdx, endIdx, false);
+    }
+
+    public Iterator<Entry<MemorySegment>> descendingRangeIterator(MemorySegment from, MemorySegment to) {
+        if (entryCount == 0) {
+            return Collections.emptyIterator();
+        }
+
+        int startIdx = 0;
+        if (from != null) {
+            int idx = binarySearch(from);
+            startIdx = (idx >= 0) ? idx : -idx - 1;
+        }
+        int endIdx = entryCount;
+        if (to != null) {
+            int idx = binarySearch(to);
+            endIdx = (idx >= 0) ? idx : -idx - 1;
+        }
+        return new FileRangeIterator(startIdx, endIdx, true);
     }
 
     private int binarySearch(MemorySegment key) {
@@ -255,11 +273,18 @@ public class FileStorage {
     private final class FileRangeIterator implements Iterator<Entry<MemorySegment>> {
         private int currentIdx;
         private final int endIdx;
+        private final boolean reverse;
         private Entry<MemorySegment> nextEntry;
 
-        FileRangeIterator(int startIdx, int endIdx) {
-            this.currentIdx = startIdx;
-            this.endIdx = endIdx;
+        FileRangeIterator(int startIdx, int endIdx, boolean reverse) {
+            this.reverse = reverse;
+            if (reverse) {
+                this.currentIdx = endIdx - 1;
+                this.endIdx = startIdx - 1;
+            } else {
+                this.currentIdx = startIdx;
+                this.endIdx = endIdx;
+            }
         }
 
         @Override
@@ -268,11 +293,20 @@ public class FileStorage {
                 return true;
             }
 
-            while (currentIdx < endIdx) {
-                Entry<MemorySegment> entry = readEntryAtIndex(currentIdx);
-                currentIdx++;
-                nextEntry = entry;
-                return true;
+            if (reverse) {
+                while (currentIdx > endIdx) {
+                    Entry<MemorySegment> entry = readEntryAtIndex(currentIdx);
+                    currentIdx--;
+                    nextEntry = entry;
+                    return true;
+                }
+            } else {
+                while (currentIdx < endIdx) {
+                    Entry<MemorySegment> entry = readEntryAtIndex(currentIdx);
+                    currentIdx++;
+                    nextEntry = entry;
+                    return true;
+                }
             }
             return false;
         }
