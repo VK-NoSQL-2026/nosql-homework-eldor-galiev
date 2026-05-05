@@ -1,6 +1,7 @@
 package ru.vk.itmo;
 
 import java.io.IOException;
+import java.nio.channels.IllegalBlockingModeException;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -17,6 +18,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
@@ -38,13 +41,17 @@ public class BaseTest {
         Assertions.assertEquals(expected, entry);
     }
 
+    public void assertNull(Entry<String> entry) {
+        checkInterrupted();
+        Assertions.assertNull(entry);
+    }
+
     public void assertSame(Iterator<? extends Entry<String>> iterator, Entry<?>... expected) {
         assertSame(iterator, Arrays.asList(expected));
     }
 
-    public void assertNull(Entry<String> entry) {
-        checkInterrupted();
-        Assertions.assertNull(entry);
+    public void assertSame(Iterator<? extends Entry<String>> iterator, int... expected) {
+        assertSame(iterator, IntStream.of(expected).mapToObj(this::entryAt).collect(Collectors.toList()));
     }
 
     public void assertSame(Iterator<? extends Entry<String>> iterator, List<? extends Entry<?>> expected) {
@@ -79,7 +86,7 @@ public class BaseTest {
         assertSame(dao.get(keyAt(index)), entryAt(index));
     }
 
-    public void sleep(int millis) {
+    public static void sleep(final int millis) {
         try {
             Thread.sleep(millis);
         } catch (InterruptedException e) {
@@ -94,6 +101,12 @@ public class BaseTest {
 
     public List<Entry<String>> entries(int count) {
         return entries("k", "v", count);
+    }
+
+    public List<Entry<String>> bigValues(int count, int valueSize) {
+        char[] data = new char[valueSize / 2];
+        Arrays.fill(data, 'V');
+        return entries("k", new String(data), count);
     }
 
     public List<Entry<String>> entries(String keyPrefix, String valuePrefix, int count) {
@@ -147,6 +160,16 @@ public class BaseTest {
         return runInParallel(tasksCount, tasksCount, runnable);
     }
 
+    public AutoCloseable runInParallel(int threadCount, int tasksCount, ParallelTask runnable, Runnable longTask) {
+        ExecutorService service = Executors.newSingleThreadExecutor();
+        executors.add(service);
+        Future<?> submit = service.submit(longTask);
+        return () -> {
+            runInParallel(threadCount, tasksCount, runnable).close();
+            submit.get();
+        };
+    }
+
     public AutoCloseable runInParallel(int threadCount, int tasksCount, ParallelTask runnable) {
         ExecutorService service = Executors.newFixedThreadPool(threadCount);
         executors.add(service);
@@ -174,6 +197,10 @@ public class BaseTest {
 
     public interface ParallelTask {
         void run(int taskIndex) throws Exception;
+    }
+
+    public interface ErrorableTask<E extends Exception> {
+        void run() throws E;
     }
 
     public void checkInterrupted() {
@@ -213,4 +240,52 @@ public class BaseTest {
         });
     }
 
+    public long sizePersistentData(Dao<String, Entry<String>> dao) throws IOException {
+        Config config = DaoFactory.Factory.extractConfig(dao);
+        return sizePersistentData(config);
+    }
+
+    public long sizePersistentData(Config config) throws IOException {
+        long[] result = new long[]{0};
+        Files.walkFileTree(config.basePath(), new SimpleFileVisitor<>() {
+            @Override
+            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+                result[0] += Files.size(file);
+                return FileVisitResult.CONTINUE;
+            }
+        });
+        return result[0];
+    }
+
+    public static void retry(
+            final long timeoutNanos,
+            final Runnable runnable) {
+        long elapsedNanos;
+        while (true) {
+            try {
+                long start = System.nanoTime();
+                runnable.run();
+                elapsedNanos = System.nanoTime() - start;
+                break;
+            } catch (Exception e) {
+                sleep(100);
+            }
+        }
+
+        // Check timeout
+        if (elapsedNanos > timeoutNanos) {
+            throw new IllegalBlockingModeException();
+        }
+    }
+
+    public static void retry(Runnable runnable) {
+        while (true) {
+            try {
+                runnable.run();
+                break;
+            } catch (Exception e) {
+                sleep(100);
+            }
+        }
+    }
 }

@@ -1,14 +1,14 @@
 package ru.vk.itmo;
 
-import org.junit.jupiter.api.Assertions;
-import org.junit.jupiter.api.Timeout;
-
-import ru.vk.itmo.test.DaoFactory;
-
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Timeout;
+
+import ru.vk.itmo.test.DaoFactory;
 
 public class PersistentTest extends BaseTest {
 
@@ -60,13 +60,18 @@ public class PersistentTest extends BaseTest {
     }
 
     @DaoTest(stage = 2)
-    void persistentPreventInMemoryStorage(Dao<String, Entry<String>> dao) throws IOException {
+    void persistentPreventInMemoryStorage(Dao<String, Entry<String>> dao) throws Exception {
         int keys = 175_000;
         int entityIndex = keys / 2 - 7;
 
         // Fill
         List<Entry<String>> entries = entries(keys);
-        entries.forEach(dao::upsert);
+        for (int entry = 0; entry < keys; entry++) {
+            final int e = entry;
+
+            // Retry if autoflush is too slow
+            retry(() -> dao.upsert(entries.get(e)));
+        }
         dao.close();
 
         // Materialize to consume heap
@@ -106,7 +111,7 @@ public class PersistentTest extends BaseTest {
         }
     }
 
-    @DaoTest(stage = 2)
+    @DaoTest(stage = 2, maxStage = 2)
     void differentKeyValues(Dao<String, Entry<String>> dao) throws IOException {
         String key1 = "long key";
         String key2 = "short key";

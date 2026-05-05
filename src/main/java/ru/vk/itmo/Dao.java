@@ -32,6 +32,8 @@ public interface Dao<D, E extends Entry<D>> extends Closeable {
         return null;
     }
 
+    Iterator<E> descendingGet(D b, D o);
+
     /**
      * Returns ordered iterator of all entries with keys from (inclusive).
      * @param from lower bound of range (inclusive)
@@ -69,6 +71,13 @@ public interface Dao<D, E extends Entry<D>> extends Closeable {
      */
     default void flush() throws IOException {
         //by default do nothing
+    }
+
+    /**
+     * Compacts data (no-op by default).
+     */
+    default void compact() throws IOException {
+        // Do nothing
     }
 
     /*
